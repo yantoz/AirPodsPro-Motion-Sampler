@@ -9,6 +9,81 @@ import Foundation
 import UIKit
 import CoreMotion
 
+class PlaceholderTextView: UITextView, UITextViewDelegate {
+    
+    var placeholderLabel = UILabel()
+    
+    @IBInspectable var placeholder: String? {
+        didSet {
+            placeholderLabel.text = placeholder
+            placeholderLabel.sizeToFit()
+        }
+    }
+    
+    override var text: String! {
+        didSet {
+            textChanged()
+        }
+    }
+    
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
+        setupView()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupView()
+    }
+
+    private func setupView() {
+        self.delegate = self
+        self.font = UIFont.systemFont(ofSize: 20)
+        self.textContainer.maximumNumberOfLines = 1
+        self.textContainer.lineBreakMode = .byTruncatingTail
+        self.layer.borderColor = UIColor.lightGray.cgColor
+        self.layer.borderWidth = 1.0
+        self.layer.cornerRadius = 3
+    }
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        
+        addSubview(placeholderLabel)
+        placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
+        placeholderLabel.textColor = .lightGray
+        placeholderLabel.font = font
+        placeholderLabel.numberOfLines = 0
+        placeholderLabel.text = placeholder
+        
+        let horizontalPadding = textContainer.lineFragmentPadding
+        NSLayoutConstraint.activate([
+            placeholderLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: textContainerInset.left + horizontalPadding),
+            placeholderLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -(textContainerInset.right + horizontalPadding)),
+            placeholderLabel.topAnchor.constraint(equalTo: topAnchor, constant: textContainerInset.top),
+            placeholderLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -textContainerInset.bottom),
+            placeholderLabel.widthAnchor.constraint(equalTo: widthAnchor)
+        ])
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(textChanged), name: UITextView.textDidChangeNotification, object: nil)
+    }
+    
+    @objc func textChanged() {
+        placeholderLabel.alpha = text.isEmpty ? 1.0 : 0.0
+    }
+    
+    // UITextViewDelegate method
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+        // Check if the pressed key is "Enter"
+        if text == "\n" {
+            // End editing
+            textView.resignFirstResponder()
+            return false // Prevent the newline character from being added
+        }
+        return true // Allow other text changes
+    }
+}
+
 class ExportCSVViewController: UIViewController, CMHeadphoneMotionManagerDelegate {
     
     lazy var button: UIButton = {
@@ -36,6 +111,7 @@ class ExportCSVViewController: UIViewController, CMHeadphoneMotionManagerDelegat
         return view
     }()
     
+    var subfolder: PlaceholderTextView?
     
     //AirPods Pro => APP :)
     let APP = CMHeadphoneMotionManager()
@@ -45,12 +121,19 @@ class ExportCSVViewController: UIViewController, CMHeadphoneMotionManagerDelegat
     
     var write: Bool = false
     
-    
-    
     override func viewDidLoad() {
         super.viewDidLoad()
         self.title = "Information View"
         view.backgroundColor = .systemBackground
+        
+        subfolder = PlaceholderTextView()
+        if let view = subfolder {
+            view.placeholder = "Subfolder"
+            view.frame = CGRect(x: self.view.bounds.minX + (self.view.bounds.width / 10),
+                                y: self.view.bounds.minY + (self.view.bounds.height / 10),
+                                width: self.view.bounds.width * 0.8, height: 40)
+            self.view.addSubview(view)
+        }
         view.addSubview(button)
         view.addSubview(textView)
         
@@ -76,6 +159,22 @@ class ExportCSVViewController: UIViewController, CMHeadphoneMotionManagerDelegat
     
     func stop() { APP.stopDeviceMotionUpdates() }
     
+    func folder() -> URL {
+        
+        let subfolder = self.subfolder == nil ? "" : self.subfolder!.text.trimmingCharacters(in: .whitespaces)
+        let dir = FileManager.default.urls(
+          for: .documentDirectory,
+          in: .userDomainMask
+        ).first!
+        
+        let FolderPath = subfolder.isEmpty ? dir : dir.appendingPathComponent(subfolder)
+
+        if !FileManager.default.fileExists(atPath: FolderPath.absoluteString) {
+            try! FileManager.default.createDirectory(at: FolderPath, withIntermediateDirectories: true, attributes: nil)
+        }
+        return FolderPath
+    }
+    
     @objc func Tap() {
         if write {
             write.toggle()
@@ -90,21 +189,28 @@ class ExportCSVViewController: UIViewController, CMHeadphoneMotionManagerDelegat
             }
             write.toggle()
             button.setTitle("Stop", for: .normal)
-            let dir = FileManager.default.urls(
-              for: .documentDirectory,
-              in: .userDomainMask
-            ).first!
-
             let now = Date()
             let filename = f.string(from: now) + "_motion.csv"
-            let fileUrl = dir.appendingPathComponent(filename)
+            let fileUrl = self.folder().appendingPathComponent(filename)
             writer.open(fileUrl)
             start()
         }
     }
     
     func printData(_ data: CMDeviceMotion) {
+        var loc: String
+        switch data.sensorLocation {
+        case .default:
+            loc = "Default"
+        case .headphoneLeft:
+            loc = "Left"
+        case .headphoneRight:
+            loc = "Right"
+        default:
+            loc = "Unknown ("+String(data.sensorLocation.rawValue)+")"
+        }
         self.textView.text = """
+            Source: \(loc)
             Quaternion:
                 x: \(data.attitude.quaternion.x)
                 y: \(data.attitude.quaternion.y)
@@ -131,8 +237,8 @@ class ExportCSVViewController: UIViewController, CMHeadphoneMotionManagerDelegat
     
     func viewCreatedFiles()
     {
-        guard let dir = FileManager.default.urls(for: .documentDirectory,in: .userDomainMask).first,
-              let components = NSURLComponents(url: dir, resolvingAgainstBaseURL: true) else { return }
+        let dir = self.folder()
+        guard let components = NSURLComponents(url: dir, resolvingAgainstBaseURL: true) else { return }
         components.scheme = "shareddocuments"
         if let sharedDocuments = components.url {
             UIApplication.shared.open(sharedDocuments, options: [:])
